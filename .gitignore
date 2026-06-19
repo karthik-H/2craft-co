@@ -78,3 +78,10 @@ logs/
 # Misc temp
 tmp/
 temp/
+# CodeValid — auto-added
+.next/
+out/
+.turbo/
+__pycache__/
+.pytest_cache/
+.venv/
