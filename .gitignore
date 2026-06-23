@@ -28,7 +28,7 @@ postcss.config.js
 
 # Prisma
 /prisma/dev.db
-/prisma/migrations/
+# /prisma/migrations/ — kept for build context (CodeValid infra requirement; see test_learnings.txt)
 **/schema.prisma.lock
 *.db
 *.sqlite
