@@ -1,41 +1,52 @@
 #!/usr/bin/env sh
 set -eu
-
 BASE_URL="${BASE_URL:-http://app:6713}"
 DATABASE_URL="${DATABASE_URL:-postgresql://app:app@toxiproxy:5432/appdb}"
 CASE_SUFFIX="$(date +%s)-$$"
-RESPONSE_FILE="$(mktemp)"
-SELLER_ID="seller_keyword_${CASE_SUFFIX}"
-SELLER_USER_ID="seller_user_keyword_${CASE_SUFFIX}"
-PROD1_ID="prod_301_${CASE_SUFFIX}"
-PROD2_ID="prod_302_${CASE_SUFFIX}"
-PROD3_ID="prod_303_${CASE_SUFFIX}"
+RESPONSE_FILE="/tmp/search_filter_by_keyword_${CASE_SUFFIX}.json"
+STATUS_FILE="/tmp/search_filter_by_keyword_${CASE_SUFFIX}.status"
+cleanup_files() { rm -f "$RESPONSE_FILE" "$STATUS_FILE"; }
+trap cleanup_files EXIT
 
-cleanup() {
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DELETE FROM product WHERE id IN ('$PROD1_ID', '$PROD2_ID', '$PROD3_ID');" >/dev/null 2>&1 || true
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DELETE FROM seller WHERE id = '$SELLER_ID';" >/dev/null 2>&1 || true
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DELETE FROM \"user\" WHERE id = '$SELLER_USER_ID';" >/dev/null 2>&1 || true
-  rm -f "$RESPONSE_FILE"
-}
-trap cleanup EXIT
+# Given
+psql "$DATABASE_URL" <<SQL
+INSERT INTO users (id, email, password_hash, role, status, created_at)
+VALUES ('seller-user-${CASE_SUFFIX}', 'seller-${CASE_SUFFIX}@example.com', '\$2a\$10\$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'SELLER', 'ACTIVE', NOW())
+ON CONFLICT (id) DO NOTHING;
+INSERT INTO seller_profiles (id, user_id, store_name, bio)
+VALUES ('seller-profile-${CASE_SUFFIX}', 'seller-user-${CASE_SUFFIX}', 'Keyword Store ${CASE_SUFFIX}', '')
+ON CONFLICT (id) DO NOTHING;
+INSERT INTO products (id, seller_id, title, description, category, price_cents, stock_qty, photos, status, visible, created_at)
+VALUES
+  ('prod-301', 'seller-profile-${CASE_SUFFIX}', 'Wireless Mouse', 'Fast wireless mouse', 'electronics', 2500, 8, '[]', 'ACTIVE', true, NOW() - INTERVAL '3 minutes'),
+  ('prod-302', 'seller-profile-${CASE_SUFFIX}', 'Mechanical Keyboard', 'Clicky keyboard', 'electronics', 6500, 5, '[]', 'ACTIVE', true, NOW() - INTERVAL '2 minutes'),
+  ('prod-303', 'seller-profile-${CASE_SUFFIX}', 'Studio Headphones', 'Wireless audio with great battery', 'electronics', 8900, 6, '[]', 'ACTIVE', true, NOW() - INTERVAL '1 minute')
+ON CONFLICT (id) DO UPDATE SET
+  seller_id = EXCLUDED.seller_id,
+  title = EXCLUDED.title,
+  description = EXCLUDED.description,
+  category = EXCLUDED.category,
+  price_cents = EXCLUDED.price_cents,
+  stock_qty = EXCLUDED.stock_qty,
+  photos = EXCLUDED.photos,
+  status = EXCLUDED.status,
+  visible = EXCLUDED.visible,
+  created_at = EXCLUDED.created_at;
+SQL
 
-# Given — bring the system to the required state
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO \"user\" (id, email, password_hash, role, status) VALUES ('$SELLER_USER_ID', 'seller-keyword-${CASE_SUFFIX}@example.com', 'test-hash', 'USER', 'active');" >/dev/null
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO seller (id, user_id, store_name) VALUES ('$SELLER_ID', '$SELLER_USER_ID', 'Keyword Store ${CASE_SUFFIX}');" >/dev/null
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO product (id, seller_id, title, description, category, price_cents, stock_qty, status, visible, created_at) VALUES ('$PROD1_ID', '$SELLER_ID', 'Wireless Mouse ${CASE_SUFFIX}', 'Compact accessory', 'electronics', 2500, 5, 'ACTIVE', true, now() - interval '3 minutes'), ('$PROD2_ID', '$SELLER_ID', 'Mechanical Keyboard ${CASE_SUFFIX}', 'Clicky keyboard', 'electronics', 7500, 5, 'ACTIVE', true, now() - interval '2 minutes'), ('$PROD3_ID', '$SELLER_ID', 'Premium Headphones ${CASE_SUFFIX}', 'Wireless listening device', 'electronics', 12500, 5, 'ACTIVE', true, now() - interval '1 minute');" >/dev/null
+# When
+curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' "$BASE_URL/products?keyword=wireless" > "$STATUS_FILE"
 
-# When — perform the action under test
-HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' -X GET "$BASE_URL/products?keyword=wireless")
+# Then
+[ "$(cat "$STATUS_FILE")" = "200" ]
+jq -e 'type == "array" and length == 2' "$RESPONSE_FILE" >/dev/null
+jq -e 'map(.id) | index("prod-301") != null and index("prod-303") != null and index("prod-302") == null' "$RESPONSE_FILE" >/dev/null
 
-# Then — HTTP/body assertions
-[ "$HTTP_CODE" = "200" ]
-grep -F "$PROD1_ID" "$RESPONSE_FILE" >/dev/null
-grep -F "$PROD3_ID" "$RESPONSE_FILE" >/dev/null
-if grep -F "$PROD2_ID" "$RESPONSE_FILE" >/dev/null; then exit 1; fi
+echo "CODEVALID_TEST_ASSERTION_OK:search_filter_by_keyword"
 
-# Cleanup — undo Given side effects
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DELETE FROM product WHERE id IN ('$PROD1_ID', '$PROD2_ID', '$PROD3_ID');" >/dev/null
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DELETE FROM seller WHERE id = '$SELLER_ID';" >/dev/null
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DELETE FROM \"user\" WHERE id = '$SELLER_USER_ID';" >/dev/null
-
-echo 'CODEVALID_TEST_ASSERTION_OK:search_filter_by_keyword'
+# Cleanup
+psql "$DATABASE_URL" <<SQL
+DELETE FROM products WHERE id IN ('prod-301', 'prod-302', 'prod-303');
+DELETE FROM seller_profiles WHERE id = 'seller-profile-${CASE_SUFFIX}';
+DELETE FROM users WHERE id = 'seller-user-${CASE_SUFFIX}';
+SQL
