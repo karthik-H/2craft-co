@@ -28,9 +28,10 @@ curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' "$BASE_URL/products" > "$STATUS_F
 [ "$(cat "$STATUS_FILE")" = "200" ]
 jq -e 'type == "array"' "$RESPONSE_FILE" >/dev/null
 jq -e --arg prod "$PROD1_ID" '
-  map(select(.id == $prod)) | length == 1 and
-  .[0].store_name == "Tech Store" and
-  .[0].seller_status == "ACTIVE"
+  map(select(.id == $prod)) as $matches |
+  ($matches | length) == 1 and
+  $matches[0].store_name == "Tech Store" and
+  $matches[0].seller_status == "ACTIVE"
 ' "$RESPONSE_FILE" >/dev/null
 
 echo "CODEVALID_TEST_ASSERTION_OK:response_includes_seller_information"
